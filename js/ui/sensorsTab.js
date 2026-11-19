@@ -1,6 +1,6 @@
 import { G0, norm3, rad2deg } from "../core/math.js";
 import { estimatePosition, zoneProbability } from "../core/geo.js";
-import { toJudgeSamples, inferSignFaceUp } from "../sensors/motion.js";
+import { toJudgeSamples } from "../sensors/motion.js";
 import { trailingStillWindow, windowDuration } from "../core/stillness.js";
 import { $, h, fmt } from "./util.js";
 
@@ -25,7 +25,7 @@ export function initSensorsTab(ctx) {
       const last = motion.buf[motion.buf.length - 1];
       const live = ctx.liveTilt();
       const raw = motion.buf.slice(-Math.round(Math.max(motion.rateHz, 30) * 5));
-      const sign = state.sign ?? inferSignFaceUp(raw.slice(-30));
+      const sign = ctx.signFor(raw.slice(-30));
       const w = trailingStillWindow(toJudgeSamples(raw, sign), cfg.stillGyroThreshold, cfg.stillAccelThreshold);
       items.push(
         ...row("샘플링", `${fmt(motion.rateHz, 0)} Hz`),
@@ -33,9 +33,9 @@ export function initSensorsTab(ctx) {
         ...row("회전 속도", last ? `${fmt(norm3(last.rotationRate), 3)} rad/s` : "–"),
         ...row("선가속도", last ? `${fmt(last.userAccel, 3)} g` : "–"),
         ...row("원시 가속도 x / y / z", last ? `${fmt(last.ax, 2)} / ${fmt(last.ay, 2)} / ${fmt(last.az, 2)}` : "–"),
-        ...row("중력 부호", state.sign == null ? `보정 전(화면 위로 가정 → ${sign > 0 ? "+" : "−"})` : state.sign > 0 ? "+ (화면 위일 때 z 음수)" : "− (화면 위일 때 z 양수, 명세 규약)"),
-        ...row("휴대폰 좌우 / 앞뒤", live ? `${fmt(rad2deg(live.tilt.roll), 2)}° / ${fmt(rad2deg(live.tilt.pitch), 2)}°` : "–"),
-        ...row("수평에서 기운 정도", live ? `${fmt(rad2deg(Math.acos(Math.min(1, live.tilt.faceUpCos))), 1)}°` : "–"),
+        ...row("중력 부호", state.sign == null ? `보정 전(추정 ${sign > 0 ? "+" : "−"})` : state.sign > 0 ? "+ (화면 위일 때 z 음수)" : "− (화면 위일 때 z 양수, 명세 규약)"),
+        ...row(cfg.phoneMount === "handlebar" ? "차체 축 기준 좌우 / 앞뒤" : "휴대폰 좌우 / 앞뒤", live ? `${fmt(rad2deg(live.tilt.roll), 2)}° / ${fmt(rad2deg(live.tilt.pitch), 2)}°` : "–"),
+        ...row(cfg.phoneMount === "handlebar" ? "똑바로 선 자세와 다른 정도" : "수평에서 기운 정도", live ? `${fmt(rad2deg(Math.acos(Math.min(1, live.tilt.faceUpCos))), 1)}°` : "–"),
         ...row("킥보드 좌우(스탠드 쪽 +)", live ? `${fmt(rad2deg(live.pose.lean), 2)}°` : "–"),
         ...row("킥보드 앞뒤", live ? `${fmt(rad2deg(live.pose.pitch), 2)}°` : "–"),
         ...row("연속 정지", `${fmt(windowDuration(w), 1)}초`),

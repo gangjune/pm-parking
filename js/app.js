@@ -1,6 +1,6 @@
 import { G0, rad2deg } from "./core/math.js";
-import { phoneTilt, scooterPose } from "./core/tilt.js";
-import { MotionSensor, inferSignFaceUp } from "./sensors/motion.js";
+import { phoneTilt, scooterPose, frameOf, effectiveBias } from "./core/tilt.js";
+import { MotionSensor, inferSign } from "./sensors/motion.js";
 import { LocationSensor, geoErrorText } from "./sensors/location.js";
 import * as store from "./storage.js";
 import { $, toast, fmt } from "./ui/util.js";
@@ -49,22 +49,30 @@ const ctx = {
     return true;
   },
 
+  /** 거치대는 기준 자세(차체 축)가, 발판은 0°/180° 오프셋이 있어야 보정된 것으로 본다 */
   isCalibrated() {
-    return ctx.state.sign != null && ctx.state.bias != null;
+    const cfg = ctx.state.cfg;
+    if (ctx.state.sign == null) return false;
+    return cfg.phoneMount === "handlebar" ? cfg.mountFrame != null : ctx.state.bias != null;
   },
 
   bias() {
-    return ctx.state.bias ?? { roll: 0, pitch: 0 };
+    return effectiveBias(ctx.state.cfg, ctx.state.bias);
+  },
+
+  /** 부호가 아직 없으면 모드에 맞는 가정으로 추정한다 */
+  signFor(raw) {
+    return ctx.state.sign ?? inferSign(raw, ctx.state.cfg.phoneMount);
   },
 
   /** 최근 n개 샘플 평균으로 본 지금 자세. 화면 표시용이라 정지 여부는 따지지 않는다 */
   liveTilt(n = 12) {
     const raw = ctx.motion.buf.slice(-n);
     if (!raw.length) return null;
-    const sign = ctx.state.sign ?? inferSignFaceUp(raw);
+    const sign = ctx.signFor(raw);
     const m = raw.reduce((a, s) => ({ x: a.x + s.ax, y: a.y + s.ay, z: a.z + s.az }), { x: 0, y: 0, z: 0 });
     const g = { x: (sign * m.x) / raw.length / G0, y: (sign * m.y) / raw.length / G0, z: (sign * m.z) / raw.length / G0 };
-    const tilt = phoneTilt(g);
+    const tilt = phoneTilt(g, frameOf(ctx.state.cfg));
     if (!tilt) return null;
     const pose = scooterPose(tilt, ctx.bias(), ctx.state.cfg.kickstandSide);
     return { tilt, pose, raw: raw[raw.length - 1], sign, signGuessed: ctx.state.sign == null };

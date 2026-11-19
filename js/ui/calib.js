@@ -1,17 +1,21 @@
 import { G0, rad2deg } from "../core/math.js";
-import { phoneTilt, biasFromReversal, scooterPose } from "../core/tilt.js";
-import { applyReference } from "../core/config.js";
+import { deg2rad } from "../core/math.js";
+import { phoneTilt, biasFromReversal, scooterPose, mountFrameFrom, DECK_FRAME } from "../core/tilt.js";
+import { applyReference, defaultConfig } from "../core/config.js";
 import { trailingStillWindow, windowDuration } from "../core/stillness.js";
-import { toJudgeSamples, inferSignFaceUp } from "../sensors/motion.js";
+import { toJudgeSamples, inferSignFaceUp, inferSignMount } from "../sensors/motion.js";
 import * as store from "../storage.js";
 import { $, fmt, sleep, toast } from "./util.js";
 
 const CALIB_STILL_SECONDS = 3; // 보정값은 매 판정에 계속 쓰여서 판정(1.5초)보다 길게 평균 낸다
 const CALIB_TIMEOUT = 25;
 
+const MOUNT_MAX_REF = deg2rad(25); // 스탠드 기울기로는 너무 큰 값. 휴대폰이 핸들과 틀어졌거나 스탠드로 안 세운 경우
+
 /**
- * 정지 구간 원시 평균을 잰다. 화면이 위라고 가정하고 부호도 같이 정한다.
+ * 정지 구간 원시 평균을 잰다. 발판 모드에서는 화면이 위라고 가정하고 부호도 같이 정한다.
  * 보정 단계에서만 이 가정을 쓰는 이유: 사용자가 화면을 위로 놓았다는 게 이 단계의 전제라서 부호를 확정할 유일한 기회다.
+ * 거치대 모드는 mean(원시 평균)만 쓰고 부호는 따로 정한다.
  */
 async function measureStill(ctx, onTick) {
   const cfg = ctx.state.cfg;
@@ -27,8 +31,8 @@ async function measureStill(ctx, onTick) {
       const mean = rw.reduce((a, s) => ({ x: a.x + s.ax, y: a.y + s.ay, z: a.z + s.az }), { x: 0, y: 0, z: 0 });
       mean.x /= rw.length; mean.y /= rw.length; mean.z /= rw.length;
       const signHere = mean.z < 0 ? 1 : -1;
-      const tilt = phoneTilt({ x: (signHere * mean.x) / G0, y: (signHere * mean.y) / G0, z: (signHere * mean.z) / G0 });
-      return { tilt, sign: signHere, samples: rw.length };
+      const tilt = phoneTilt({ x: (signHere * mean.x) / G0, y: (signHere * mean.y) / G0, z: (signHere * mean.z) / G0 }, DECK_FRAME);
+      return { tilt, sign: signHere, mean, raw: rw, samples: rw.length };
     }
     await sleep(100);
   }
@@ -40,9 +44,26 @@ export function initCalib(ctx) {
   const btnA = $("#btnCalA");
   const btnB = $("#btnCalB");
 
+  function renderMode() {
+    const mount = ctx.state.cfg.phoneMount;
+    document.querySelectorAll("#mountSeg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mount === mount)));
+    $("#calibHandlebar").hidden = mount !== "handlebar";
+    $("#calibDeck").hidden = mount === "handlebar";
+  }
+
   function renderState() {
+    renderMode();
     const { bias, sign } = ctx.state;
+    const cfg = ctx.state.cfg;
     const el = $("#calibState");
+    if (cfg.phoneMount === "handlebar") {
+      if (cfg.mountFrame == null || cfg.referenceLean == null) {
+        el.textContent = "거치대 기준 자세가 없습니다. 보정 전에는 다른 항목이 모두 통과해도 사진으로 확인하게 됩니다.";
+        return;
+      }
+      el.textContent = `거치대 기준 θ ${fmt(rad2deg(cfg.referenceLean), 1)}°, 통과 구간 ${fmt(rad2deg(cfg.minLean), 1)}° ~ ${fmt(rad2deg(cfg.maxLean), 1)}°${cfg.mountFrame.at ? `, ${new Date(cfg.mountFrame.at).toLocaleString("ko-KR")}` : ""}`;
+      return;
+    }
     if (bias == null || sign == null) {
       el.textContent = "보정값이 없습니다. 보정 전에는 다른 항목이 모두 통과해도 사진으로 확인하게 됩니다.";
       return;
@@ -137,10 +158,69 @@ export function initCalib(ctx) {
     renderState();
   });
 
+  $("#btnCalMount").addEventListener("click", async () => {
+    const textEl = $("#calMountText");
+    const res = await run($("#btnCalMount"), textEl, "기준 자세");
+    if (!res) return;
+    // 부호는 브라우저 규약이라 이미 정해졌으면 그대로 쓴다. 처음이면 화면이 위쪽으로 조금 기울었다고 보고 정한다.
+    // 거치대 축은 같은 부호로 잰 중력에서 잡으니 부호를 잘못 골라도 축이 같이 뒤집혀 θ는 그대로 나온다
+    const sign = ctx.state.sign ?? inferSignMount(res.raw);
+    const g = { x: (sign * res.mean.x) / G0, y: (sign * res.mean.y) / G0, z: (sign * res.mean.z) / G0 };
+    const frame = mountFrameFrom(g);
+    const tilt = frame && phoneTilt(g, frame);
+    if (!tilt) {
+      textEl.textContent = "휴대폰 방향을 읽지 못했습니다. 거치대에 단단히 꽂고 다시 해 보세요.";
+      return;
+    }
+    const phi = scooterPose(tilt, { roll: 0, pitch: 0 }, ctx.state.cfg.kickstandSide).lean;
+    if (phi <= 0) {
+      textEl.textContent = `기준 θ가 ${fmt(rad2deg(phi), 1)}°로 나왔습니다. 스탠드 방향 설정(설정 탭)이 맞는지, 킥보드를 스탠드로 세웠는지 확인하세요.`;
+      return;
+    }
+    if (phi > MOUNT_MAX_REF) {
+      textEl.textContent = `기준 θ가 ${fmt(rad2deg(phi), 1)}°로 너무 큽니다. 휴대폰 한 변이 핸들과 나란하게 꽂혔는지, 핸들을 폈는지 확인하세요.`;
+      return;
+    }
+    const cfg = applyReference({ ...ctx.state.cfg, mountFrame: { ...frame, at: Date.now() } }, phi);
+    ctx.state.cfg = cfg;
+    store.saveConfig(cfg);
+    if (ctx.state.sign == null) {
+      ctx.state.sign = sign;
+      store.saveSign(sign);
+    }
+    textEl.textContent = `기준 θ ${fmt(rad2deg(phi), 1)}° → 통과 구간 ${fmt(rad2deg(cfg.minLean), 1)}° ~ ${fmt(rad2deg(cfg.maxLean), 1)}°로 저장했습니다.`;
+    toast("거치대 기준 자세를 저장했습니다.");
+    ctx.emit("config-changed");
+    ctx.emit("calib-changed");
+  });
+
+  // 모드를 바꾸면 기준 자세는 다시 잡아야 한다. 같은 킥보드라도 휴대폰 위치에 따라 θ가 다르게 읽혀서
+  document.querySelectorAll("#mountSeg button").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const mount = btn.dataset.mount;
+      if (mount === ctx.state.cfg.phoneMount) return;
+      const d = defaultConfig();
+      const cfg = { ...ctx.state.cfg, phoneMount: mount, mountFrame: null, referenceLean: null, minLean: d.minLean, maxLean: d.maxLean };
+      ctx.state.cfg = cfg;
+      store.saveConfig(cfg);
+      $("#calMountText").textContent = "";
+      $("#calRefText").textContent = "";
+      toast(mount === "handlebar" ? "핸들 거치대 모드입니다. 기준 자세를 저장하세요." : "발판 모드입니다. 1~3단계를 진행하세요.", 4000);
+      ctx.emit("config-changed");
+      ctx.emit("calib-changed");
+    }),
+  );
+
   $("#btnCalReset").addEventListener("click", () => {
     store.clearCalibration();
+    const d = defaultConfig();
+    const cfg = { ...ctx.state.cfg, mountFrame: null, referenceLean: null, minLean: d.minLean, maxLean: d.maxLean };
+    ctx.state.cfg = cfg;
+    store.saveConfig(cfg);
+    ctx.emit("config-changed");
     ctx.state.bias = null;
     ctx.state.sign = null;
+    $("#calMountText").textContent = "";
     first = null;
     btnB.disabled = true;
     $("#calAText").textContent = "";
@@ -151,6 +231,7 @@ export function initCalib(ctx) {
   });
 
   ctx.on("config-changed", renderState);
+  ctx.on("calib-changed", renderState);
   renderState();
   return renderState;
 }

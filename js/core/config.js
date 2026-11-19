@@ -37,6 +37,10 @@ export function defaultConfig() {
 
     // 자세
     kickstandSide: "left",
+    // 휴대폰을 어디에 두고 재나. 핸들 거치대면 주행 지도를 보던 그대로 반납 측정까지 이어진다.
+    // 대신 핸들을 꺾으면 기울기가 틀어져서(조향축이 뒤로 누워 있음) 측정 때 핸들을 펴야 한다
+    phoneMount: "handlebar", // "handlebar" | "deck"
+    mountFrame: null, // 거치대 기준 자세에서 잡은 차체 축 {b, f, d}
     // 데크가 이만큼 옆으로 누우면 기울어진 게 아니라 이미 넘어진 것으로 본다
     fallenLean: deg2rad(45),
     // 앞뒤로 이보다 서 있으면 휴대폰이 데크 위가 아니라 손에 있는 것으로 보고 기울기를 믿지 않는다

@@ -112,3 +112,20 @@ export function inferSignFaceUp(raw) {
   const z = raw.reduce((acc, s) => acc + s.az, 0) / raw.length;
   return z < 0 ? 1 : -1;
 }
+
+/**
+ * 거치대: 화면이 타는 사람 얼굴 쪽으로 조금이라도 위를 본다고 가정한다(대부분의 거치대가 그렇게 기운다).
+ * 화면이 거의 수직이라 z로 가르기 어려우면 윗변이 위로 오게 꽂았다고 본다.
+ * 부호는 브라우저 규약이라 한 번 정해지면(발판 보정 포함) 저장된 값을 쓰고, 이건 처음 한 번만 쓴다.
+ */
+export function inferSignMount(raw) {
+  if (!raw.length) return -1;
+  const m = raw.reduce((a, s) => ({ y: a.y + s.ay, z: a.z + s.az }), { y: 0, z: 0 });
+  const z = m.z / raw.length;
+  const y = m.y / raw.length;
+  if (Math.abs(z) > 0.25 * G0) return z < 0 ? 1 : -1;
+  return y < 0 ? 1 : -1;
+}
+
+/** 모드에 맞는 부호 추정 */
+export const inferSign = (raw, mount) => (mount === "handlebar" ? inferSignMount(raw) : inferSignFaceUp(raw));

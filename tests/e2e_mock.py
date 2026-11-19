@@ -1,5 +1,5 @@
 """헤드리스 Chrome으로 웹 실험 도구 전체 흐름을 모의 센서로 돌린다.
-사용: python3 tests/e2e_mock.py <base_url> <screenshot_dir> <convention: spec|ios>
+사용: python3 tests/e2e_mock.py <base_url> <screenshot_dir> <convention: spec|ios> [mode: handlebar|deck]
 센서 부호 규약: spec = 화면 위일 때 z=+9.8(W3C 명세), ios = 반대 부호.
 Chrome 경로는 CHROME 환경변수로 바꿀 수 있다.
 """
@@ -7,6 +7,7 @@ import json, os, sys, time, pathlib
 from playwright.sync_api import sync_playwright
 
 BASE, OUT, CONV = sys.argv[1], pathlib.Path(sys.argv[2]), sys.argv[3]
+MODE = sys.argv[4] if len(sys.argv) > 4 else "handlebar"
 OUT.mkdir(parents=True, exist_ok=True)
 CHROME = os.environ.get("CHROME", "/usr/bin/google-chrome")
 LAT0, LON0 = 37.45050, 126.65370
@@ -17,7 +18,9 @@ MOCK = r"""
   if (typeof DeviceMotionEvent === "undefined") return;  // about:blank 같은 비보안 문맥
   const G0 = 9.80665;
   const d2r = (d) => d * Math.PI / 180;
-  window.__mock = { roll: 0, pitch: 0, moving: false, sway: 0, swayHz: 0.8, conv: "%CONV%", lat: %LAT0%, lon: %LON0%, acc: 4.0 };
+  // mount: 핸들 거치대. 화면이 타는 사람 쪽으로 mountTilt만큼 위로 들리고, 핸들과 mountKappa만큼 틀어져 꽂힘
+  window.__mock = { roll: 0, pitch: 0, moving: false, sway: 0, swayHz: 0.8, conv: "%CONV%", lat: %LAT0%, lon: %LON0%, acc: 4.0,
+                    mount: %MOUNT%, mountTilt: 35, mountKappa: 1.5 };
   setInterval(() => {
     const m = window.__mock;
     const ts = performance.now() / 1000;
@@ -25,7 +28,14 @@ MOCK = r"""
     const swayRoll = m.sway * Math.sin(2 * Math.PI * m.swayHz * ts);
     const swayRate = m.sway ? m.sway * 2 * Math.PI * m.swayHz * Math.cos(2 * Math.PI * m.swayHz * ts) + 3 : 0;
     const r = d2r(m.roll + swayRoll), p = d2r(m.pitch);
-    const gd = { x: -Math.sin(r) * Math.cos(p), y: Math.sin(p), z: -Math.cos(r) * Math.cos(p) };
+    let gd = { x: -Math.sin(r) * Math.cos(p), y: Math.sin(p), z: -Math.cos(r) * Math.cos(p) };  // 차체 좌표의 아래 방향
+    if (m.mount) {
+      const a = d2r(m.mountTilt), k = d2r(m.mountKappa);
+      const x = [1, 0, 0], y = [0, Math.sin(a), Math.cos(a)], z = [0, -Math.cos(a), Math.sin(a)];
+      const xk = x.map((v, i) => v * Math.cos(k) + y[i] * Math.sin(k)), yk = x.map((v, i) => -v * Math.sin(k) + y[i] * Math.cos(k));
+      const dd = [gd.x, gd.y, gd.z], dot = (q) => dd[0] * q[0] + dd[1] * q[1] + dd[2] * q[2];
+      gd = { x: dot(xk), y: dot(yk), z: dot(z) };
+    }
     const k = m.conv === "spec" ? -G0 : G0;
     const jit = m.moving ? 0.8 : 0.002;
     const n = () => (Math.random() - 0.5) * 2;
@@ -50,9 +60,10 @@ MOCK = r"""
   };
   navigator.geolocation.clearWatch = (id) => clearInterval(watchers.get(id));
 })();
-""".replace("%CONV%", CONV).replace("%LAT0%", str(LAT0)).replace("%LON0%", str(LON0))
+""".replace("%CONV%", CONV).replace("%LAT0%", str(LAT0)).replace("%LON0%", str(LON0)).replace("%MOUNT%", "true" if MODE == "handlebar" else "false")
 
-BIAS_ROLL, BIAS_PITCH = 1.0, 0.5   # 휴대폰 쪽 오프셋(카메라 범프 흉내)
+# 발판: 휴대폰 쪽 오프셋(카메라 범프 흉내). 거치대는 대신 mountKappa로 틀어져 꽂힘
+BIAS_ROLL, BIAS_PITCH = (1.0, 0.5) if MODE == "deck" else (0.0, 0.0)
 PHI = 9.0                          # 이 킥보드의 평지 스탠드 기울기
 
 def mock(page, **kw):
@@ -105,21 +116,31 @@ with sync_playwright() as pw:
     page.wait_for_timeout(2000)
     R["ride_nozones"] = page.inner_text("#rideDist")
 
-    # ---- 보정 1·2단계 (바닥 2° 기울어진 책상) ----
     page.click('.tab[data-tab="calib"]')
-    mock(page, moving=True); time.sleep(0.8); mock(page, roll=2 + BIAS_ROLL, pitch=BIAS_PITCH, moving=False)
-    page.click("#btnCalA")
-    page.wait_for_function("document.querySelector('#calAText').textContent.startsWith('첫 번째')", timeout=15000)
-    mock(page, moving=True); time.sleep(0.8); mock(page, roll=-2 + BIAS_ROLL, pitch=BIAS_PITCH, moving=False)
-    page.click("#btnCalB")
-    page.wait_for_function("document.querySelector('#calBText').textContent.includes('오프셋')", timeout=15000)
-    R["calib"] = page.inner_text("#calBText")
-
-    # ---- 3단계 기준 자세: 평지에 킥보드, θ = φ ----
-    place(page, PHI)
-    page.click("#btnCalRef")
-    page.wait_for_function("document.querySelector('#calRefText').textContent.includes('저장했습니다')", timeout=15000)
-    R["calib_ref"] = page.inner_text("#calRefText")
+    R["calib_before"] = page.inner_text("#calibState")
+    if MODE == "deck":
+        page.click('#mountSeg button[data-mount="deck"]')
+        # ---- 보정 1·2단계 (바닥 2° 기울어진 책상) ----
+        mock(page, moving=True); time.sleep(0.8); mock(page, roll=2 + BIAS_ROLL, pitch=BIAS_PITCH, moving=False)
+        page.click("#btnCalA")
+        page.wait_for_function("document.querySelector('#calAText').textContent.startsWith('첫 번째')", timeout=15000)
+        mock(page, moving=True); time.sleep(0.8); mock(page, roll=-2 + BIAS_ROLL, pitch=BIAS_PITCH, moving=False)
+        page.click("#btnCalB")
+        page.wait_for_function("document.querySelector('#calBText').textContent.includes('오프셋')", timeout=15000)
+        R["calib"] = page.inner_text("#calBText")
+        # ---- 3단계 기준 자세: 평지에 킥보드, θ = φ ----
+        place(page, PHI)
+        page.click("#btnCalRef")
+        page.wait_for_function("document.querySelector('#calRefText').textContent.includes('저장했습니다')", timeout=15000)
+        R["calib_ref"] = page.inner_text("#calRefText")
+    else:
+        # ---- 거치대: 평지·스탠드·핸들 편 상태로 기준 자세 한 번 ----
+        place(page, PHI)
+        page.click("#btnCalMount")
+        page.wait_for_function("document.querySelector('#calMountText').textContent.includes('저장했습니다')", timeout=15000)
+        R["calib_ref"] = page.inner_text("#calMountText")
+    R["calib_state"] = page.inner_text("#calibState")
+    R["chip"] = page.inner_text("#chipCalib")
     page.evaluate("window.scrollTo(0,0)")
     page.screenshot(path=str(OUT / "01_calib.png"))
 

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deg2rad, rad2deg } from "../js/core/math.js";
 import { LocalProjection, estimatePosition, zoneProbability, squareAround } from "../js/core/geo.js";
-import { phoneTilt, biasFromReversal, scooterPose, Geometry } from "../js/core/tilt.js";
+import { phoneTilt, biasFromReversal, scooterPose, Geometry, mountFrameFrom, frameOf, DECK_FRAME } from "../js/core/tilt.js";
 import { defaultConfig, applyGeometry } from "../js/core/config.js";
 import { evaluate } from "../js/core/judge.js";
 
@@ -139,7 +139,8 @@ function input({ leanDeg = 8, pitchDeg = 0, stillSeconds = 2, zone = square("big
   return { fixes, motion: samples(leanDeg, pitchDeg, stillSeconds), binding: null, zones: [zone], now };
 }
 const ZERO = { roll: 0, pitch: 0 };
-const cfg = defaultConfig();
+// 아래 기존 테스트는 휴대폰 축 = 차체 축인 발판 모드로 만든 중력이라 발판 모드로 돌린다
+const cfg = { ...defaultConfig(), phoneMount: "deck" };
 
 test("전부 정상 → 사진 생략", () => {
   const r = evaluate(input(), cfg, ZERO);
@@ -317,5 +318,94 @@ test("흔들리다 넘어감 → 거부", () => {
 test("손에 들고 앞뒤로 세운 채 시간 초과 → 넘어짐 근거로 쓰지 않음", () => {
   const motion = swaying(10, 20).map((s) => ({ ...s, gravity: gravity(10, 50) }));
   const r = evaluate({ ...input(), motion }, cfg, ZERO);
+  assert.equal(r.decision, "requirePhoto");
+});
+
+// ---------- 핸들 거치대 모드 ----------
+const V = (x, y, z) => ({ x, y, z });
+const dotv = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+const negv = (a) => V(-a.x, -a.y, -a.z);
+
+/**
+ * 거치대에 꽂힌 휴대폰의 축을 차체 좌표(x 오른쪽, y 앞, z 위)로.
+ * tiltDeg: 화면이 타는 사람 쪽 수평에서 위로 들린 각. kappaDeg: 휴대폰이 핸들과 틀어져 꽂힌 각.
+ * orient: portrait | landscape(타는 사람이 볼 때 윗변이 왼쪽) | upsideDown
+ */
+function mountAxes(tiltDeg = 30, kappaDeg = 0, orient = "portrait") {
+  const a = deg2rad(tiltDeg), k = deg2rad(kappaDeg);
+  let x = V(1, 0, 0), y = V(0, Math.sin(a), Math.cos(a));
+  const z = V(0, -Math.cos(a), Math.sin(a));
+  [x, y] = [V(x.x * Math.cos(k) + y.x * Math.sin(k), x.y * Math.cos(k) + y.y * Math.sin(k), x.z * Math.cos(k) + y.z * Math.sin(k)),
+            V(-x.x * Math.sin(k) + y.x * Math.cos(k), -x.y * Math.sin(k) + y.y * Math.cos(k), -x.z * Math.sin(k) + y.z * Math.cos(k))];
+  if (orient === "landscape") [x, y] = [y, negv(x)];
+  if (orient === "upsideDown") [x, y] = [negv(x), negv(y)];
+  return { x, y, z };
+}
+/** 차체가 θ(스탠드 쪽 +), 앞뒤 p일 때 거치대 휴대폰이 느끼는 아래 방향 */
+function mountGravity(leanDeg, pitchDeg, axes) {
+  const d = gravity(leanDeg, pitchDeg); // 차체 좌표의 아래 방향(발판 모드 휴대폰과 같은 축)
+  return V(dotv(d, axes.x), dotv(d, axes.y), dotv(d, axes.z));
+}
+const tiltIn = (g, frame) => { const t = phoneTilt(g, frame); return { lean: rad2deg(t.roll), pitch: rad2deg(t.pitch) }; };
+
+test("발판 축으로 phoneTilt는 예전 식과 같다", () => {
+  const g = gravity(7, -3);
+  const a = phoneTilt(g), b = phoneTilt(g, DECK_FRAME);
+  near(rad2deg(a.roll), 7, 1e-9); near(rad2deg(b.pitch), -3, 1e-9);
+});
+
+test("거치대: 기준 자세 하나로 축을 잡으면 θ와 앞뒤가 그대로 읽힌다 (세로·가로·거꾸로·눕힘)", () => {
+  for (const [tilt, orient] of [[30, "portrait"], [60, "portrait"], [30, "landscape"], [40, "upsideDown"], [88, "portrait"]]) {
+    const axes = mountAxes(tilt, 0, orient);
+    const frame = mountFrameFrom(mountGravity(9, 0, axes));
+    for (const [lean, pitch] of [[9, 0], [3, 0], [20, 0], [12, 5], [-4, -6], [80, 0]]) {
+      const t = tiltIn(mountGravity(lean, pitch, axes), frame);
+      near(t.lean, lean, 0.01, `${orient} ${tilt}° θ`);
+      near(Math.abs(t.pitch), Math.abs(pitch), 0.01, `${orient} ${tilt}° 앞뒤`);
+    }
+  }
+});
+
+test("거치대: 휴대폰이 핸들과 2° 틀어져도 기준 자세 대비 변화는 맞게 읽힌다", () => {
+  const axes = mountAxes(35, 2);
+  const frame = mountFrameFrom(mountGravity(9, 0, axes));
+  const ref = tiltIn(mountGravity(9, 0, axes), frame).lean;
+  for (const [lean, pitch] of [[3, 0], [15, 0], [9, 4], [5, -3]]) {
+    const t = tiltIn(mountGravity(lean, pitch, axes), frame);
+    near(t.lean - ref, lean - 9, 0.15, `Δθ ${lean}`);
+    near(Math.abs(t.pitch), Math.abs(pitch), 0.3, `앞뒤 ${pitch}`);
+  }
+});
+
+test("거치대: 중력 부호를 반대로 잡아도 축이 같이 뒤집혀 θ는 같다", () => {
+  const axes = mountAxes(30);
+  const gRef = mountGravity(9, 0, axes), g = mountGravity(14, 2, axes);
+  const a = tiltIn(g, mountFrameFrom(gRef));
+  const b = tiltIn(negv(g), mountFrameFrom(negv(gRef)));
+  near(a.lean, b.lean, 1e-9); near(Math.abs(a.pitch), Math.abs(b.pitch), 1e-9);
+});
+
+test("거치대 모드 판정: 기준 자세로 통과 구간, 발판 오프셋은 무시", () => {
+  const axes = mountAxes(40, 1.5);
+  const base = { ...defaultConfig(), phoneMount: "handlebar" };
+  const frame = mountFrameFrom(mountGravity(9, 0, axes));
+  const phi = phoneTilt(mountGravity(9, 0, axes), frame).roll;
+  const c = applyReference({ ...base, mountFrame: frame }, phi);
+  assert.equal(frameOf(c), frame);
+  const mk = (lean, pitch = 0) => ({ ...input(), motion: input({ leanDeg: lean, pitchDeg: pitch }).motion.map((s) => ({ ...s, gravity: mountGravity(lean, pitch, axes) })) });
+  const BIG_BIAS = { roll: deg2rad(5), pitch: deg2rad(5) }; // 발판 보정값이 남아 있어도 쓰지 않아야 한다
+  assert.equal(evaluate(mk(9), c, BIG_BIAS).decision, "returnWithoutPhoto");
+  assert.equal(evaluate(mk(3), c, BIG_BIAS).decision, "reject");
+  assert.equal(evaluate(mk(85), c, BIG_BIAS).decision, "reject");
+  assert.match(evaluate(mk(85), c, BIG_BIAS).message, /넘어져/);
+  assert.equal(evaluate(mk(9, 7), c, BIG_BIAS).decision, "reject"); // 앞뒤 경사
+  const placed = evaluate(mk(9), c, BIG_BIAS).checks.find((x) => x.name === "placement");
+  assert.equal(placed.reason, "거치대");
+});
+
+test("거치대 보정 전이면 세로 임시 축으로 읽고 결과는 사진까지만", () => {
+  const c = { ...defaultConfig(), phoneMount: "handlebar" };
+  const axes = mountAxes(5); // 거의 세운 휴대폰
+  const r = evaluate({ ...input(), calibrated: false, motion: input({ leanDeg: 9 }).motion.map((s) => ({ ...s, gravity: mountGravity(9, 0, axes) })) }, c, ZERO);
   assert.equal(r.decision, "requirePhoto");
 });

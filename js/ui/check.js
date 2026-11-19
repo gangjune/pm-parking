@@ -1,7 +1,7 @@
 import { deg2rad } from "../core/math.js";
 import { evaluate, preview, summarize } from "../core/judge.js";
 import { trailingStillWindow, windowDuration } from "../core/stillness.js";
-import { toJudgeSamples, inferSignFaceUp } from "../sensors/motion.js";
+import { toJudgeSamples } from "../sensors/motion.js";
 import { renderScooter } from "./scooter.js";
 import { unlockAudio, playResult } from "./sound.js";
 import { $, h, fmt, sleep, toast, DECISION_TEXT, CHECK_TEXT, STATUS_MARK } from "./util.js";
@@ -25,8 +25,9 @@ export function initCheck(ctx) {
 
   // 화면 표시용 실시간 갱신 + 미리보기
   setInterval(() => {
-    // 결과를 본 뒤 휴대폰을 집어 들면 다시 세우는 중이라고 보고 미리보기를 다시 움직인다. 결과 카드는 그대로 둔다
-    if (frozen && !running && pickedUp(ctx.motion.buf)) {
+    // 결과를 본 뒤 휴대폰을 집어 들거나(발판) 킥보드를 움직이면(거치대) 다시 세우는 중이라고 보고
+    // 미리보기를 다시 움직인다. 결과 카드는 그대로 둔다
+    if (frozen && !running && (pickedUp(ctx.motion.buf) || movedFrom(frozen, ctx.motion.running ? ctx.liveTilt() : null))) {
       frozen = null;
       $("#phaseText").textContent = "다시 세운 뒤 미리보기가 초록이면 측정하세요.";
     }
@@ -128,7 +129,7 @@ export function initCheck(ctx) {
 
     while (!aborted) {
       raw = ctx.motion.rawSince(t0);
-      sign = ctx.state.sign ?? inferSignFaceUp(raw.slice(-30));
+      sign = ctx.signFor(raw.slice(-30));
       samples = toJudgeSamples(raw, sign);
       const w = trailingStillWindow(samples, cfg.stillGyroThreshold, cfg.stillAccelThreshold);
       const dur = windowDuration(w);
@@ -142,7 +143,7 @@ export function initCheck(ctx) {
       $("#phaseText").textContent =
         !raw.length && elapsed > 2 ? "모션 신호가 들어오지 않습니다. 휴대폰 브라우저에서 열었는지 확인하세요."
           : dur < 0.2 && elapsed > 4 ? `흔들리고 있습니다. 손을 뗐는데도 계속되면 ${left}초 뒤 흔들린 폭으로 판정합니다.`
-          : dur < 0.2 ? "휴대폰을 데크에 올려놓고 손을 떼세요."
+          : dur < 0.2 ? placeText(ctx.state.cfg)
             : dur < cfg.stillDuration ? "그대로 두세요."
               : nFix < cfg.minFixCount ? "GPS 위치를 기다리는 중입니다."
                 : "판정 중";
@@ -222,6 +223,8 @@ export function initCheck(ctx) {
       parts.push(entry.photo ? photoDone(entry) : photoButton(entry));
     } else if (report.decision === "reject") {
       parts.push(h("button", { class: "btn btn-primary", type: "button", onclick: start }, "다시 세우고 측정"));
+      // 거치대는 핸들이 꺾이면 기울기가 몇 도씩 틀어져서, 멀쩡한데 걸렸을 수 있다는 걸 같이 알려준다
+      if (ctx.state.cfg.phoneMount === "handlebar") parts.push(h("p", { class: "small muted" }, "핸들이 꺾여 있었다면 똑바로 펴고 다시 측정하세요."));
     }
     area.replaceChildren(...parts);
   }
@@ -256,9 +259,33 @@ export function initCheck(ctx) {
     document.querySelectorAll("#labelSeg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.label === label)));
   }
 
+  // 측정 전 안내 문구는 휴대폰 위치(모드)에 따라 다르다
+  const idleText = () => {
+    if (!running && !frozen) $("#phaseText").textContent = idleHint(ctx.state.cfg);
+  };
+  ctx.on("config-changed", idleText);
+  idleText();
+
   return () => {
+    idleText();
     if (!frozen) renderScooter(svg, { lean: null, cfg: ctx.state.cfg });
   };
+}
+
+function idleHint(cfg) {
+  return cfg.phoneMount === "handlebar"
+    ? "핸들을 똑바로 펴고, 휴대폰은 거치대에 꽂은 채로 측정을 시작하세요."
+    : "휴대폰을 화면이 위로, 윗변이 핸들 쪽을 향하게 데크에 올려놓고 측정을 시작하세요.";
+}
+
+function placeText(cfg) {
+  return cfg.phoneMount === "handlebar" ? "핸들을 펴고 휴대폰과 킥보드에서 손을 떼세요." : "휴대폰을 데크에 올려놓고 손을 떼세요.";
+}
+
+/** 결과 때 θ에서 3° 넘게 달라졌나. 거치대는 휴대폰을 집지 않고 킥보드째 다시 세우니 이걸로 알아챈다 */
+function movedFrom(frozen, live) {
+  if (frozen?.lean == null || !live) return false;
+  return Math.abs(live.pose.lean - frozen.lean) > (3 * Math.PI) / 180;
 }
 
 const toDeg = (r) => (r * 180) / Math.PI;

@@ -263,6 +263,7 @@ main { padding: 16px 16px calc(env(safe-area-inset-bottom) + 40px); }
 .kv dt.group { grid-column: 1 / -1; background: var(--concrete); color: var(--ink); font-weight: 700; font-size: var(--s0); }
 
 /* ---------- 보정 ---------- */
+.mount-pick { display: grid; gap: 6px; justify-items: start; margin-bottom: var(--gap); }
 .steps { padding-left: 1.4em; margin: 0 0 var(--gap); }
 .steps li { margin-bottom: 18px; }
 .steps p { margin: 0 0 8px; }

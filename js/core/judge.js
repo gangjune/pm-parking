@@ -1,6 +1,6 @@
 import { rad2deg, clamp } from "./math.js";
 import { estimatePosition, zoneProbability } from "./geo.js";
-import { phoneTilt, scooterPose, Geometry } from "./tilt.js";
+import { phoneTilt, scooterPose, Geometry, frameOf, effectiveBias } from "./tilt.js";
 import { trailingStillWindow, windowDuration, meanGravity } from "./stillness.js";
 
 export const STATUS = { pass: 0, uncertain: 1, fail: 2 };
@@ -84,14 +84,14 @@ export function checkPose(samples, cfg, bias) {
   const w = trailingStillWindow(samples, cfg.stillGyroThreshold, cfg.stillAccelThreshold);
   const dur = windowDuration(w);
   const g = meanGravity(w);
-  const tilt = g ? phoneTilt(g) : null;
+  const tilt = g ? phoneTilt(g, frameOf(cfg)) : null;
   if (dur < cfg.stillDuration || !tilt) {
     // 정지를 못 했으면 흔들린 폭으로 넘어질 위험만 따로 본다
     return [result("stillness", STATUS.uncertain, "계속 흔들려서 정지 상태를 확인하지 못했습니다.", { stillSeconds: dur }), ...checkSway(samples, cfg, bias)];
   }
   const out = [result("stillness", STATUS.pass, "정지 확인", { stillSeconds: dur, stillSamples: w.length })];
 
-  const pose = scooterPose(tilt, bias, cfg.kickstandSide);
+  const pose = scooterPose(tilt, effectiveBias(cfg, bias), cfg.kickstandSide);
   const m = {
     leanDeg: rad2deg(pose.lean),
     pitchDeg: rad2deg(pose.pitch),
@@ -121,12 +121,27 @@ function leanReason(ls, lean, cfg) {
  * 옆으로 누운 데크(넘어짐)와 화면이 아래를 본 휴대폰은 roll만으로는 둘 다 큰 값이라
  * 45°~135°는 넘어짐, 그 너머는 뒤집어 놓은 것으로 나눈다.
  */
+const PLACEMENT_TEXT = {
+  handlebar: { pass: "거치대", bad: "휴대폰 방향이 보정 때와 많이 다릅니다. 거치대에 그대로 꽂혀 있는지 확인하세요.", moved: "휴대폰이 거치대에서 빠진 채로 움직였습니다." },
+  deck: { pass: "데크 위", bad: "휴대폰이 데크 위에 화면이 위로 놓이지 않은 것 같습니다.", moved: "휴대폰이 데크 위에 놓이지 않은 채로 움직였습니다." },
+};
+const placementText = (cfg) => PLACEMENT_TEXT[cfg.phoneMount] ?? PLACEMENT_TEXT.deck;
+
+/**
+ * 거치대 기준 자세가 없으면 휴대폰이 차체에 어떤 각도로 붙었는지 몰라서 기울기 숫자를 믿을 수 없다
+ * (화면이 누운 거치대면 멀쩡해도 넘어짐으로 읽힌다). 이때는 넘어짐 판정을 아예 하지 않고 사진으로 넘긴다
+ */
+const mountUncalibrated = (cfg) => cfg.phoneMount === "handlebar" && !cfg.mountFrame;
+
 function poseChecks(pose, cfg, m) {
+  if (mountUncalibrated(cfg)) {
+    return [result("placement", STATUS.uncertain, "거치대 기준 자세가 없어 기울기를 읽을 수 없습니다(보정 탭).", m)];
+  }
   const absLean = Math.abs(pose.lean);
   if (absLean > Math.PI - cfg.fallenLean || Math.abs(pose.pitch) > cfg.maxPlacementPitch) {
-    return [result("placement", STATUS.uncertain, "휴대폰이 데크 위에 화면이 위로 놓이지 않은 것 같습니다.", m)];
+    return [result("placement", STATUS.uncertain, placementText(cfg).bad, m)];
   }
-  const out = [result("placement", STATUS.pass, "데크 위", m)];
+  const out = [result("placement", STATUS.pass, placementText(cfg).pass, m)];
   if (absLean >= cfg.fallenLean) {
     out.push(result("fallen", STATUS.fail, "킥보드가 넘어져 있습니다.", m));
     return out;
@@ -146,7 +161,7 @@ function poseChecks(pose, cfg, m) {
  * 손에 든 채로 시간이 다 가도 여기서 걸릴 수 있다. 측정 화면 문구로 손을 떼게 유도한다.
  */
 export function checkSway(samples, cfg, bias) {
-  if (!samples?.length) return [];
+  if (!samples?.length || mountUncalibrated(cfg)) return [];
   const tEnd = samples[samples.length - 1].t;
   const recent = samples.filter((s) => tEnd - s.t <= cfg.swayWindow);
   if (recent.length < 10) return [];
@@ -166,8 +181,8 @@ export function checkSway(samples, cfg, bias) {
       j++;
     }
     const n = i - j + 1;
-    const tilt = phoneTilt({ x: acc.x / n, y: acc.y / n, z: acc.z / n });
-    if (tilt) poses.push(scooterPose(tilt, bias, cfg.kickstandSide));
+    const tilt = phoneTilt({ x: acc.x / n, y: acc.y / n, z: acc.z / n }, frameOf(cfg));
+    if (tilt) poses.push(scooterPose(tilt, effectiveBias(cfg, bias), cfg.kickstandSide));
   }
   if (!poses.length) return [];
 
@@ -179,7 +194,7 @@ export function checkSway(samples, cfg, bias) {
 
   // 손에 들고 있으면 앞뒤로 크게 선다. 이때는 넘어짐 근거로 쓰지 않는다
   if (pitchMaxAbs > cfg.maxPlacementPitch) {
-    return [result("sway", STATUS.uncertain, "휴대폰이 데크 위에 놓이지 않은 채로 움직였습니다.", m)];
+    return [result("sway", STATUS.uncertain, placementText(cfg).moved, m)];
   }
   if (Math.max(Math.abs(leanMin), Math.abs(leanMax)) >= cfg.fallenLean) {
     return [result("sway", STATUS.fail, "측정 중에 킥보드가 넘어갔습니다.", m)];
