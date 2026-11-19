@@ -158,13 +158,16 @@ test("작은 구역 + 휴대폰 GPS → 사진 (p≈0.17)", () => {
   near(r.checks.find((c) => c.name === "location").metrics.pAllowed, 0.1746, 0.01);
 });
 
-test("구역에서 멀리 떨어짐 → 거부", () => {
-  assert.equal(evaluate(input({ zone: square("far", "allowed", 60, 0, 5) }), cfg, ZERO).decision, "reject");
+test("구역에서 멀리 떨어짐 → 사진 (위치는 ✕로 남는다)", () => {
+  const r = evaluate(input({ zone: square("far", "allowed", 60, 0, 5) }), cfg, ZERO);
+  assert.equal(r.decision, "requirePhoto");
+  assert.equal(r.checks.find((c) => c.name === "location").status, "fail");
+  assert.match(r.message, /지정 주차구역 밖/);
 });
 
-test("금지구역 한가운데 → 거부", () => {
+test("금지구역 한가운데 → 사진", () => {
   const c = { ...cfg, zonePolicy: "anywhereExceptForbidden" };
-  assert.equal(evaluate(input({ zone: square("cw", "forbidden", 0, 0, 20) }), c, ZERO).decision, "reject");
+  assert.equal(evaluate(input({ zone: square("cw", "forbidden", 0, 0, 20) }), c, ZERO).decision, "requirePhoto");
 });
 
 test("fix 부족 → 사진", () => {
@@ -188,4 +191,131 @@ test("applyGeometry가 θ 구간을 다시 잡는다", () => {
 test("보정 전이면 다른 항목이 다 통과해도 사진", () => {
   const i = { ...input(), calibrated: false };
   assert.equal(evaluate(i, cfg, ZERO).decision, "requirePhoto");
+});
+
+// ---------- 추가 기능 ----------
+import { nearestAllowed } from "../js/core/geo.js";
+import { preview } from "../js/core/judge.js";
+import { applyReference } from "../js/core/config.js";
+
+test("가장 가까운 허용구역 고르기 (주행 지도)", () => {
+  // 동쪽 30 m에 중심, 한 변 10 m → 가장 가까운 점은 동쪽 25 m. 북쪽 50 m 구역보다 가깝다
+  const zones = [square("n", "allowed", 0, 50, 5), square("e", "allowed", 30, 0, 5), square("x", "forbidden", 10, 0, 3)];
+  const n = nearestAllowed(ORIGIN, zones);
+  assert.equal(n.zoneId, "e");
+  near(n.distance, 25, 0.05);
+  near(n.bearingDeg, 90, 0.5);
+  assert.equal(nearestAllowed(ORIGIN, [square("in", "allowed", 0, 0, 5)]).distance, 0);
+  assert.equal(nearestAllowed(ORIGIN, [square("x", "forbidden", 0, 0, 5)]), null);
+});
+
+test("미리보기: 평지 정상 / 경사 / 구역 밖", () => {
+  const now = 1_000_000;
+  const fixes = Array.from({ length: 5 }, (_, i) => ({ ...ORIGIN, accuracy: 4, t: now - i * 1000 }));
+  const big = [square("big", "allowed", 0, 0, 20)];
+  const live = (rollDeg) => {
+    const tilt = phoneTilt(gravity(rollDeg, 0));
+    return { tilt, pose: scooterPose(tilt, ZERO, "left") };
+  };
+  assert.equal(preview(live(8), fixes, big, now, cfg).decision, "returnWithoutPhoto");
+  const tilted = preview(live(-2), fixes, big, now, cfg);
+  assert.equal(tilted.decision, "reject");
+  assert.match(tilted.reason, /스탠드 반대쪽/);
+  assert.equal(preview(live(8), fixes, [square("far", "allowed", 60, 0, 5)], now, cfg).decision, "requirePhoto");
+  assert.equal(preview(live(85), fixes, big, now, cfg).decision, "reject");
+  assert.equal(preview(null, [], big, now, cfg).decision, "requirePhoto");
+});
+
+test("기준 자세로 통과 구간 잡기", () => {
+  const c = applyReference(cfg, deg2rad(9));
+  near(rad2deg(c.minLean), 5, 1e-9);
+  near(rad2deg(c.maxLean), 19, 1e-9);
+  near(rad2deg(applyReference(cfg, deg2rad(4)).minLean), 2, 1e-9); // 하한 바닥 2°
+  const g = applyReference({ ...cfg, geometry: { h: 0.5, d: 0.25, phi: deg2rad(10), m: 25 }, requiredTipEnergy: 1, standMargin: 0.2 }, deg2rad(10));
+  near(rad2deg(g.minLean), 7.3235, 1e-3); // 실측 기하값이 있으면 에너지 기준을 따른다
+});
+
+// ---------- 다시 세우기는 넘어짐 관련일 때만 ----------
+import { checkSway } from "../js/core/judge.js";
+
+const reasonOf = (r, name) => r.checks.find((c) => c.name === name);
+
+test("넘어져 있음 → 거부 (좌우 어느 쪽이든)", () => {
+  for (const roll of [85, -80, 50]) {
+    const r = evaluate(input({ leanDeg: roll }), cfg, ZERO);
+    assert.equal(r.decision, "reject", `roll ${roll}`);
+    assert.equal(reasonOf(r, "fallen").status, "fail");
+    assert.match(r.message, /넘어져 있습니다/);
+  }
+});
+
+test("스탠드 쪽 30° (예전엔 놓임 오류) → 넘어질 위험으로 거부", () => {
+  const r = evaluate(input({ leanDeg: 30 }), cfg, ZERO);
+  assert.equal(r.decision, "reject");
+  assert.equal(reasonOf(r, "lean").status, "fail");
+});
+
+test("화면이 아래 / 앞뒤로 세움 → 기울기 판정 없이 사진", () => {
+  for (const [roll, pitch] of [[178, 0], [8, 45]]) {
+    const r = evaluate(input({ leanDeg: roll, pitchDeg: pitch }), cfg, ZERO);
+    assert.equal(r.decision, "requirePhoto", `${roll}, ${pitch}`);
+    assert.equal(reasonOf(r, "placement").status, "uncertain");
+    assert.equal(reasonOf(r, "lean"), undefined);
+  }
+});
+
+test("구역 밖이어도 넘어질 자세면 거부가 먼저", () => {
+  const r = evaluate(input({ leanDeg: -2, zone: square("far", "allowed", 60, 0, 5) }), cfg, ZERO);
+  assert.equal(r.decision, "reject");
+  assert.match(r.message, /스탠드 반대쪽/);
+});
+
+test("보정 안 됨 + 위치 부족은 사진", () => {
+  const i = { ...input(), calibrated: false };
+  i.fixes = i.fixes.slice(0, 1);
+  assert.equal(evaluate(i, cfg, ZERO).decision, "requirePhoto");
+});
+
+/** 손을 뗀 뒤에도 base ± amp 로 계속 흔들리는 데크 */
+function swaying(baseDeg, ampDeg, seconds = 6, hz = 60, f = 0.8) {
+  const out = [];
+  for (let i = 0; i < seconds * hz; i++) {
+    const t = i / hz;
+    const roll = baseDeg + ampDeg * Math.sin(2 * Math.PI * f * t);
+    const rate = deg2rad(ampDeg * 2 * Math.PI * f * Math.cos(2 * Math.PI * f * t));
+    // 각속도가 0을 지나는 순간에도 정지로 잡히지 않게 작은 진동을 깔아 둔다
+    out.push({ t, gravity: gravity(roll, 0), rotationRate: { x: 0, y: rate + 0.05, z: 0 }, userAccel: 0.005 });
+  }
+  return out;
+}
+
+test("흔들림 + 경사: 흔들리다 통과 구간을 넘으면 거부", () => {
+  // 통과 구간 4°~20°. 평균 16°(경사로 스탠드 쪽에 몰림)에서 ±6° → 최대 22°
+  const i = { ...input(), motion: swaying(16, 6) };
+  const r = evaluate(i, cfg, ZERO);
+  assert.equal(r.decision, "reject", JSON.stringify(r.checks.map((c) => [c.name, c.status])));
+  assert.equal(reasonOf(r, "stillness").status, "uncertain");
+  const sw = reasonOf(r, "sway");
+  assert.equal(sw.status, "fail");
+  near(sw.metrics.leanMaxDeg, 22, 0.6); // 이동평균 때문에 진폭이 살짝 줄어든다
+});
+
+test("같은 흔들림이라도 평지 가운데면 사진", () => {
+  // 평균 12°에서 ±6° → 6°~18°, 구간 안
+  const r = evaluate({ ...input(), motion: swaying(12, 6) }, cfg, ZERO);
+  assert.equal(r.decision, "requirePhoto");
+  assert.equal(reasonOf(r, "sway").status, "pass");
+  assert.match(r.message, /흔들려서/);
+});
+
+test("흔들리다 넘어감 → 거부", () => {
+  const r = checkSway(swaying(30, 25), cfg, ZERO);
+  assert.equal(r[0].status, "fail");
+  assert.match(r[0].reason, /넘어갔습니다/);
+});
+
+test("손에 들고 앞뒤로 세운 채 시간 초과 → 넘어짐 근거로 쓰지 않음", () => {
+  const motion = swaying(10, 20).map((s) => ({ ...s, gravity: gravity(10, 50) }));
+  const r = evaluate({ ...input(), motion }, cfg, ZERO);
+  assert.equal(r.decision, "requirePhoto");
 });

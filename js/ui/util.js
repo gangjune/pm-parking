@@ -61,6 +61,8 @@ export const CHECK_TEXT = {
   binding: "바인딩",
   stillness: "정지",
   placement: "놓인 자세",
+  fallen: "넘어짐",
+  sway: "흔들림",
   lean: "좌우 기울기",
   pitch: "앞뒤 경사",
   location: "위치",

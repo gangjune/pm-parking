@@ -4,6 +4,7 @@ import { MotionSensor, inferSignFaceUp } from "./sensors/motion.js";
 import { LocationSensor, geoErrorText } from "./sensors/location.js";
 import * as store from "./storage.js";
 import { $, toast, fmt } from "./ui/util.js";
+import { initRide } from "./ui/ride.js";
 import { initCheck } from "./ui/check.js";
 import { initSensorsTab } from "./ui/sensorsTab.js";
 import { initCalib } from "./ui/calib.js";
@@ -23,7 +24,7 @@ const ctx = {
   },
   motion: new MotionSensor(),
   location: new LocationSensor(),
-  currentTab: "check",
+  currentTab: "ride",
 
   on(evt, cb) {
     (listeners[evt] ??= []).push(cb);
@@ -84,16 +85,18 @@ const ctx = {
   },
 
   saveLogsNow: () => persistLogs(),
+  showTab: (name) => showTab(name),
 };
 
 function persistLogs() {
   if (store.saveLogs(ctx.state.logs)) return;
-  // 용량 초과면 오래된 기록의 원시 데이터부터 지운다. 요약값은 남겨야 실험 집계가 가능해서
-  for (let i = ctx.state.logs.length - 1; i >= 0; i--) {
-    if (ctx.state.logs[i].raw) {
-      ctx.state.logs[i].raw = null;
+  // 용량 초과면 오래된 기록의 원시 데이터, 그다음 사진부터 지운다. 요약값은 남겨야 실험 집계가 가능해서
+  for (const field of ["raw", "photo"]) {
+    for (let i = ctx.state.logs.length - 1; i >= 0; i--) {
+      if (!ctx.state.logs[i][field]) continue;
+      ctx.state.logs[i][field] = null;
       if (store.saveLogs(ctx.state.logs)) {
-        toast("저장 공간이 부족해 오래된 기록의 원시 데이터를 지웠습니다. 기록을 내보내 두세요.", 5000);
+        toast(`저장 공간이 부족해 오래된 기록의 ${field === "raw" ? "원시 데이터" : "사진"}를 지웠습니다. 기록을 내보내 두세요.`, 5000);
         return;
       }
     }
@@ -137,10 +140,15 @@ function updateStatus() {
 // ---------- 탭 ----------
 const tabHooks = {};
 function showTab(name) {
+  const prev = ctx.currentTab;
   ctx.currentTab = name;
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.tab === name)));
   document.querySelectorAll('[role="tabpanel"]').forEach((p) => (p.hidden = p.id !== `tab-${name}`));
-  tabHooks[name]?.();
+  // 탭 훅은 함수(보일 때만) 또는 {show, hide}. 주행 탭은 떠날 때 화면 꺼짐 방지를 풀어야 해서 hide가 있다
+  if (prev !== name) tabHooks[prev]?.hide?.();
+  const hook = tabHooks[name];
+  if (typeof hook === "function") hook();
+  else hook?.show?.();
 }
 
 function boot() {
@@ -149,6 +157,7 @@ function boot() {
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
   $("#btnSensorsOn").addEventListener("click", () => ctx.ensureSensors());
 
+  tabHooks.ride = initRide(ctx);
   tabHooks.check = initCheck(ctx);
   tabHooks.sensors = initSensorsTab(ctx);
   tabHooks.calib = initCalib(ctx);
@@ -161,7 +170,7 @@ function boot() {
   ctx.location.onUpdate(() => updateStatus());
   setInterval(updateStatus, 500);
   updateStatus();
-  showTab("check");
+  showTab("ride");
 }
 
 // 디버깅·브라우저 테스트용. 실기기에서 콘솔로 상태를 볼 때도 쓴다

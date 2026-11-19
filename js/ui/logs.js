@@ -29,7 +29,7 @@ export function logsToCSV(logs) {
   const metricKeys = new Set();
   logs.forEach((l) => l.checks.forEach((c) => Object.keys(c.metrics ?? {}).forEach((k) => metricKeys.add(`${c.name}.${k}`))));
   const mk = [...metricKeys].sort();
-  const header = ["id", "time", "decision", "label", "memo", "calibrated", ...CHECK_ORDER.map((n) => `status.${n}`), ...mk, "fixCount", "zoneCount", "userAgent"];
+  const header = ["id", "time", "decision", "label", "memo", "calibrated", "hasPhoto", ...CHECK_ORDER.map((n) => `status.${n}`), ...mk, "fixCount", "zoneCount", "userAgent"];
   const esc = (v) => {
     if (v == null) return "";
     const s = typeof v === "number" ? String(Math.round(v * 1e6) / 1e6) : String(v);
@@ -38,7 +38,7 @@ export function logsToCSV(logs) {
   const lines = logs.map((l) => {
     const byName = Object.fromEntries(l.checks.map((c) => [c.name, c]));
     return [
-      l.id, l.time, l.decision, l.label ?? "", l.memo ?? "", l.calibrated,
+      l.id, l.time, l.decision, l.label ?? "", l.memo ?? "", l.calibrated, l.photo ? 1 : 0,
       ...CHECK_ORDER.map((n) => byName[n]?.status ?? ""),
       ...mk.map((k) => {
         const [n, key] = k.split(".");
@@ -92,7 +92,7 @@ export function initLogs(ctx) {
             h("span", { class: "log-meta" }, new Date(l.time).toLocaleString("ko-KR")),
           ),
           h("div", { class: "log-meta" },
-            `좌우 ${fmt(lean, 1, "°")}, 앞뒤 ${fmt(pitch, 1, "°")}, GPS ±${fmt(acc, 1)} m` + (pA != null ? `, 허용 ${fmt(pA * 100, 0)}%` : "") + (l.memo ? `, ${l.memo}` : "")),
+            `좌우 ${fmt(lean, 1, "°")}, 앞뒤 ${fmt(pitch, 1, "°")}, GPS ±${fmt(acc, 1)} m` + (pA != null ? `, 허용 ${fmt(pA * 100, 0)}%` : "") + (l.photo ? ", 사진 있음" : "") + (l.memo ? `, ${l.memo}` : "")),
           h("div", { class: "log-actions" },
             h("div", { class: "segmented" },
               ...["correct", "wrong"].map((lab) =>

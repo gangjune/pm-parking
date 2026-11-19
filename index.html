@@ -22,7 +22,8 @@
       <button class="btn btn-small" id="btnSensorsOn" type="button">센서 켜기</button>
     </div>
     <nav class="tabs" role="tablist" aria-label="화면">
-      <button role="tab" class="tab" data-tab="check" aria-selected="true">판정</button>
+      <button role="tab" class="tab" data-tab="ride" aria-selected="true">주행</button>
+      <button role="tab" class="tab" data-tab="check" aria-selected="false">판정</button>
       <button role="tab" class="tab" data-tab="sensors" aria-selected="false">센서</button>
       <button role="tab" class="tab" data-tab="calib" aria-selected="false">보정</button>
       <button role="tab" class="tab" data-tab="zones" aria-selected="false">구역</button>
@@ -36,8 +37,25 @@
   </div>
 
   <main>
+    <!-- 주행 -->
+    <section class="panel panel-ride" id="tab-ride" role="tabpanel">
+      <div class="ride">
+        <div id="rideMap" class="ride-map" role="region" aria-label="주행 지도. 내 위치와 가장 가까운 주차구역"></div>
+        <button class="btn btn-small ride-recenter" id="btnRecenter" type="button" hidden>내 위치로</button>
+        <div class="ride-card" id="rideCard" data-state="off" aria-live="polite">
+          <div class="ride-info">
+            <span class="ride-label" id="rideLabel">주차구역</span>
+            <strong class="ride-dist" id="rideDist">–</strong>
+            <span class="ride-sub" id="rideSub">주행을 시작하면 내 위치와 가장 가까운 주차구역을 지도에 보여줍니다.</span>
+          </div>
+          <button class="btn btn-primary btn-big" id="btnRideStart" type="button">주행 시작</button>
+          <button class="btn btn-big" id="btnRideReturn" type="button" hidden>반납하기</button>
+        </div>
+      </div>
+    </section>
+
     <!-- 판정 -->
-    <section class="panel" id="tab-check" role="tabpanel">
+    <section class="panel" id="tab-check" role="tabpanel" hidden>
       <figure class="scooter-figure">
         <svg id="scooterSvg" viewBox="0 0 360 240" role="img" aria-label="뒤에서 본 킥보드 기울기 도식"></svg>
         <figcaption class="readouts">
@@ -45,6 +63,13 @@
           <div class="readout"><span class="readout-label">앞뒤</span><span class="readout-value" id="livePitch">–</span></div>
           <div class="readout"><span class="readout-label">GPS</span><span class="readout-value" id="liveGps">–</span></div>
         </figcaption>
+        <div class="preview" id="previewStrip" data-level="idle" aria-live="polite">
+          <i aria-hidden="true"></i>
+          <div>
+            <strong id="previewTitle">지금 상태 미리보기</strong>
+            <span id="previewText">센서를 켜면 이대로 두었을 때 어떤 판정이 나올지 보여줍니다.</span>
+          </div>
+        </div>
       </figure>
 
       <div class="progress-block">
@@ -66,6 +91,7 @@
       <div class="result" id="resultBox" hidden>
         <div class="decision" id="decision"></div>
         <p class="decision-msg" id="decisionMsg"></p>
+        <div class="next-step" id="nextStep"></div>
         <ol class="checks" id="checkList"></ol>
         <details class="metrics">
           <summary>측정값 전체</summary>
@@ -105,6 +131,11 @@
           <button class="btn btn-primary" id="btnCalB" type="button" disabled>두 번째 측정</button>
           <p class="small muted" id="calBText"></p>
         </li>
+        <li>
+          <p>평평한 바닥에 킥보드를 스탠드로 세우고, 휴대폰을 데크에 올린 뒤 누르세요. 이 자세를 기준으로 통과 구간을 자동으로 잡습니다.</p>
+          <button class="btn btn-primary" id="btnCalRef" type="button">기준 자세 저장</button>
+          <p class="small muted" id="calRefText"></p>
+        </li>
       </ol>
       <div class="calib-state" id="calibState"></div>
       <button class="btn btn-ghost" id="btnCalReset" type="button">보정값 지우기</button>
@@ -128,6 +159,7 @@
           <label class="field field-inline"><span>한 변</span><input type="number" id="squareSide" value="10" min="1" step="1" inputmode="decimal" /><span>m</span></label>
           <button class="btn" id="btnSquare" type="button">현재 위치에 정사각형 추가</button>
         </div>
+        <label class="check-row"><input type="checkbox" id="showLogs" /> 측정 기록을 지도에 표시</label>
         <p class="small muted" id="drawHint"></p>
         <ul class="zone-list" id="zoneList"></ul>
         <div class="tool-row">

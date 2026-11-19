@@ -13,10 +13,13 @@ const COLORS = ["var(--pass)", "var(--warn)", "var(--fail)"];
  * level: 0 통과 / 1 애매 / 2 실패 / null
  */
 export function renderScooter(svg, { lean, cfg, level = null }) {
-  const geo = cfg.geometry ?? DRAW_DEFAULT;
+  // 기준 자세를 쟀으면 그 θ에서 노면이 수평으로 그려지게 한다
+  const geo = cfg.geometry ?? { ...DRAW_DEFAULT, phi: cfg.referenceLean ?? DRAW_DEFAULT.phi };
   const idle = lean == null || !Number.isFinite(lean);
-  const theta = idle ? geo.phi : lean;
-  const beta = theta - geo.phi; // 노면 횡경사, 스탠드 쪽이 낮으면 +
+  // 넘어졌으면 노면은 평평하게 두고 킥보드만 눕힌다. 그 밖에는 큰 각도를 자른다(노면이 같이 돌아가 그림이 깨져서)
+  const fallen = !idle && Math.abs(lean) >= (cfg.fallenLean ?? deg2rad(45));
+  const theta = idle ? geo.phi : fallen ? lean : Math.max(deg2rad(-25), Math.min(deg2rad(45), lean));
+  const beta = fallen ? 0 : theta - geo.phi; // 노면 횡경사, 스탠드 쪽이 낮으면 +
   const s = cfg.kickstandSide === "right" ? 1 : -1; // 화면에서 스탠드 쪽 방향
 
   const add = (p, v, k) => ({ x: p.x + v.x * k, y: p.y + v.y * k });
@@ -60,7 +63,7 @@ export function renderScooter(svg, { lean, cfg, level = null }) {
     <polygon points="${asphalt}" style="fill: #DCE2E1"/>
     <line x1="${groundA.x}" y1="${groundA.y}" x2="${groundB.x}" y2="${groundB.y}" style="stroke: var(--asphalt); stroke-width: 2"/>
     <line x1="${O.x}" y1="${O.y}" x2="${F.x}" y2="${F.y}" style="stroke: ${idle ? "var(--line)" : "var(--pass)"}; stroke-width: 7; stroke-linecap: round; opacity: .55"/>
-    ${label(add(add(O, dirStand, geo.d * SCALE * 0.5), { x: 0, y: 1 }, 22), "지지영역")}
+    ${fallen ? "" : label(add(add(O, dirStand, geo.d * SCALE * 0.5), { x: 0, y: 1 }, 22), "지지영역")}
 
     <line x1="${O.x}" y1="${O.y}" x2="${O.x}" y2="${O.y - 0.98 * SCALE}" style="stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 4 4"/>
     <path d="M ${arcStart.x} ${arcStart.y} A ${arcR} ${arcR} 0 0 ${sweep} ${arcEnd.x.toFixed(1)} ${arcEnd.y.toFixed(1)}" style="fill: none; stroke: var(--signal); stroke-width: 2"/>
@@ -78,9 +81,9 @@ export function renderScooter(svg, { lean, cfg, level = null }) {
     <circle cx="${P.x}" cy="${P.y}" r="5" style="fill: ${plumbColor}"/>
     <circle cx="${C.x}" cy="${C.y}" r="9" style="fill: var(--surface); stroke: ${plumbColor}; stroke-width: 3"/>
     <circle cx="${C.x}" cy="${C.y}" r="3" style="fill: ${plumbColor}"/>
-    ${label({ x: C.x + 14 * -s, y: C.y + 4 }, "무게중심", s < 0 ? "start" : "end")}
-    ${label({ x: F.x + 10 * s, y: F.y - 8 }, "스탠드", s < 0 ? "end" : "start")}
-    ${label({ x: T.x + 6, y: Math.max(16, T.y - 12) }, idle ? "대기 중" : `θ ${rad2deg(theta).toFixed(1)}°`, "middle")}
+    ${fallen ? "" : label({ x: C.x + 14 * -s, y: C.y + 4 }, "무게중심", s < 0 ? "start" : "end")}
+    ${fallen ? "" : label({ x: F.x + 10 * s, y: F.y - 8 }, "스탠드", s < 0 ? "end" : "start")}
+    ${label({ x: T.x + 6, y: Math.max(16, T.y - 12) }, idle ? "대기 중" : `${fallen ? "넘어짐 " : ""}θ ${rad2deg(lean).toFixed(1)}°`, "middle")}
     ${cfg.geometry ? "" : label({ x: 12, y: 20 }, "도식(실측값 미입력)", "start")}
   `;
 }

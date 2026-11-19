@@ -181,6 +181,26 @@ main { padding: 16px 16px calc(env(safe-area-inset-bottom) + 40px); }
 .readout-label { font-size: var(--s-1); color: var(--muted); }
 .readout-value { font-size: var(--s3); font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; }
 
+/* 미리보기: 측정 전 지금 상태. 결과 카드와 헷갈리지 않게 도식 아래 붙여 둔다 */
+.preview {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+.preview i { width: 12px; height: 12px; border-radius: 50%; margin-top: 5px; background: var(--line); }
+.preview strong { display: block; font-size: var(--s0); }
+.preview span { display: block; font-size: var(--s-1); color: var(--muted); }
+.preview[data-level="0"] { background: var(--pass-tint); }
+.preview[data-level="0"] i { background: var(--pass); }
+.preview[data-level="1"] { background: var(--warn-tint); }
+.preview[data-level="1"] i { background: var(--warn); }
+.preview[data-level="2"] { background: var(--fail-tint); }
+.preview[data-level="2"] i { background: var(--fail); }
+
 .progress-block { margin-top: var(--gap); }
 .progress-row { display: flex; justify-content: space-between; gap: 12px; }
 .meter { height: 10px; border-radius: 5px; background: var(--surface); border: 1px solid var(--line); margin: 8px 0 4px; overflow: hidden; }
@@ -203,6 +223,11 @@ main { padding: 16px 16px calc(env(safe-area-inset-bottom) + 40px); }
 .result[data-decision="requirePhoto"] .decision { color: var(--warn); }
 .result[data-decision="reject"] .decision { color: var(--fail); }
 .decision-msg { margin: 6px 0 12px; font-size: var(--s1); }
+
+.next-step { display: grid; gap: 10px; margin: 0 0 14px; }
+.next-step:empty { display: none; }
+.photo-done { display: flex; gap: 12px; align-items: center; }
+.photo-done img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
 
 .checks { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
 .checks li {
@@ -243,9 +268,81 @@ main { padding: 16px 16px calc(env(safe-area-inset-bottom) + 40px); }
 .steps p { margin: 0 0 8px; }
 .calib-state { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
 
+/* ---------- 주행 ---------- */
+/* 지도는 상단 바 아래 화면 전체. main 여백을 상쇄해 가장자리까지 채운다 */
+.panel-ride { max-width: none; margin: -16px -16px calc(-40px - env(safe-area-inset-bottom)); }
+.ride { position: relative; }
+.ride-map { height: 70vh; min-height: 360px; background: #DCE2E1; }
+.ride-recenter { position: absolute; top: 12px; left: 12px; z-index: 1000; background: var(--surface); box-shadow: 0 1px 4px rgba(21, 34, 42, 0.25); }
+
+.ride-card {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 1000;
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 6px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 2px 12px rgba(21, 34, 42, 0.18);
+}
+.ride-info { display: grid; }
+.ride-label { font-size: var(--s-1); color: var(--muted); }
+.ride-dist { font-size: var(--s4); font-weight: 700; line-height: 1.1; letter-spacing: -0.02em; }
+.ride-sub { font-size: var(--s-1); color: var(--muted); }
+.ride-card[data-state="far"] { border-left-color: var(--pass); }
+.ride-card[data-state="far"] .ride-dist { color: var(--pass); }
+.ride-card[data-state="inside"] { background: var(--pass-tint); border-left-color: var(--pass); }
+.ride-card[data-state="inside"] .ride-dist { color: var(--pass); }
+.ride-card[data-state="forbidden"] { background: var(--fail-tint); border-left-color: var(--fail); }
+.ride-card[data-state="forbidden"] .ride-dist { color: var(--fail); }
+.ride-card[data-state="searching"] { border-left-color: var(--warn); }
+.ride-card[data-state="searching"] .ride-dist,
+.ride-card[data-state="off"] .ride-dist,
+.ride-card[data-state="nozones"] .ride-dist { font-size: var(--s3); }
+
+/* 가장 가까운 구역: 굵은 테두리가 천천히 숨 쉬듯 깜박인다. 달리면서 곁눈으로 봐도 잡히게 */
+@keyframes zonePulse {
+  0%, 100% { stroke-opacity: 1; stroke-width: 4px; }
+  50% { stroke-opacity: 0.35; stroke-width: 11px; }
+}
+.ride-map .zone-nearest { animation: zonePulse 1.6s ease-in-out infinite; }
+
+.zone-tag {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  width: max-content !important;
+  translate: -50% calc(-100% - 6px);
+  padding: 3px 10px 3px 3px;
+  background: var(--pass);
+  color: #fff;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  font: 700 var(--s1)/1.2 var(--font);
+  white-space: nowrap;
+  box-shadow: 0 1px 6px rgba(21, 34, 42, 0.35);
+}
+.zone-tag-p {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--pass);
+  font-weight: 700;
+}
+
 /* ---------- 구역 ---------- */
 .map { height: 56vh; min-height: 320px; border: 1px solid var(--line); border-radius: 14px; }
 .zone-tools { margin-top: 10px; }
+.check-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+.check-row input { width: 22px; height: 22px; }
 .zone-list { list-style: none; padding: 0; margin: 8px 0; }
 .zone-list li {
   display: flex;
@@ -309,4 +406,5 @@ main { padding: 16px 16px calc(env(safe-area-inset-bottom) + 40px); }
 
 @media (prefers-reduced-motion: reduce) {
   .meter-fill { transition: none; }
+  .ride-map .zone-nearest { animation: none; }
 }

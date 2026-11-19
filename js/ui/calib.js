@@ -1,5 +1,6 @@
 import { G0, rad2deg } from "../core/math.js";
-import { phoneTilt, biasFromReversal } from "../core/tilt.js";
+import { phoneTilt, biasFromReversal, scooterPose } from "../core/tilt.js";
+import { applyReference } from "../core/config.js";
 import { trailingStillWindow, windowDuration } from "../core/stillness.js";
 import { toJudgeSamples, inferSignFaceUp } from "../sensors/motion.js";
 import * as store from "../storage.js";
@@ -47,10 +48,13 @@ export function initCalib(ctx) {
       return;
     }
     el.innerHTML = "";
+    const ref = ctx.state.cfg.referenceLean;
     el.append(
       `저장된 보정값: 좌우 ${fmt(rad2deg(bias.roll), 2)}°, 앞뒤 ${fmt(rad2deg(bias.pitch), 2)}°`,
       document.createElement("br"),
       `중력 부호 ${sign > 0 ? "+" : "−"}${bias.at ? `, ${new Date(bias.at).toLocaleString("ko-KR")}` : ""}`,
+      document.createElement("br"),
+      ref == null ? "기준 자세: 아직 안 잼(기본 통과 구간 사용)" : `기준 자세 θ ${fmt(rad2deg(ref), 1)}°, 통과 구간 ${fmt(rad2deg(ctx.state.cfg.minLean), 1)}° ~ ${fmt(rad2deg(ctx.state.cfg.maxLean), 1)}°`,
     );
   }
 
@@ -108,6 +112,31 @@ export function initCalib(ctx) {
     ctx.emit("calib-changed");
   });
 
+  $("#btnCalRef").addEventListener("click", async () => {
+    // 보정 전에 재면 범프 오프셋과 부호가 섞여 기준이 틀어져서 순서를 강제한다
+    if (!ctx.isCalibrated()) {
+      $("#calRefText").textContent = "먼저 1, 2단계 보정을 끝내 주세요.";
+      return;
+    }
+    const res = await run($("#btnCalRef"), $("#calRefText"), "기준 자세");
+    if (!res) return;
+    if (res.sign !== ctx.state.sign) {
+      $("#calRefText").textContent = "화면이 아래를 향한 것 같습니다. 화면이 위로 오게 놓고 다시 하세요.";
+      return;
+    }
+    const phi = scooterPose(res.tilt, ctx.bias(), ctx.state.cfg.kickstandSide).lean;
+    if (phi <= 0) {
+      $("#calRefText").textContent = `기준 θ가 ${fmt(rad2deg(phi), 1)}°로 나왔습니다. 스탠드 방향 설정(설정 탭)이 맞는지, 킥보드를 스탠드로 세웠는지 확인하세요.`;
+      return;
+    }
+    const cfg = applyReference(ctx.state.cfg, phi);
+    ctx.state.cfg = cfg;
+    store.saveConfig(cfg);
+    ctx.emit("config-changed");
+    $("#calRefText").textContent = `기준 θ ${fmt(rad2deg(phi), 1)}° → 통과 구간 ${fmt(rad2deg(cfg.minLean), 1)}° ~ ${fmt(rad2deg(cfg.maxLean), 1)}°로 저장했습니다.`;
+    renderState();
+  });
+
   $("#btnCalReset").addEventListener("click", () => {
     store.clearCalibration();
     ctx.state.bias = null;
@@ -121,6 +150,7 @@ export function initCalib(ctx) {
     toast("보정값을 지웠습니다.");
   });
 
+  ctx.on("config-changed", renderState);
   renderState();
   return renderState;
 }

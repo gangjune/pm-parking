@@ -20,8 +20,8 @@ const GROUPS = [
       num("locationWindow", "위치 사용 구간", "초", "이보다 오래된 위치는 버립니다. 걸어오던 위치가 섞이지 않게."),
       pct("allowedPassProbability", "허용구역 통과 확률"),
       pct("forbiddenPassProbability", "금지구역 통과 상한"),
-      pct("forbiddenFailProbability", "금지구역 거부 확률"),
-      num("outsideFailSigmas", "구역 밖 확정 거리", "σ", "가장 가까운 허용구역이 이만큼 멀어야 구역 밖으로 거부합니다."),
+      pct("forbiddenFailProbability", "금지구역 확정 확률"),
+      num("outsideFailSigmas", "구역 밖 확정 거리", "σ", "가장 가까운 허용구역이 이만큼 멀어야 구역 밖(✕)으로 표시합니다. 넘어짐과 무관해서 판정은 사진입니다."),
     ],
   },
   {
@@ -30,20 +30,22 @@ const GROUPS = [
       num("stillGyroThreshold", "회전 속도 상한", "rad/s", "", { step: "0.001" }),
       num("stillAccelThreshold", "선가속도 상한", "g", "", { step: "0.001" }),
       num("stillDuration", "정지 유지 시간", "초", "", { step: "0.1" }),
-      num("stillTimeout", "최대 대기 시간", "초", "", { step: "1" }),
+      num("stillTimeout", "최대 대기 시간", "초", "이 시간 안에 멈추지 않으면 흔들린 폭으로 넘어질 위험을 판정합니다.", { step: "1" }),
+      num("swayWindow", "흔들림을 볼 구간", "초", "대기 시간이 끝나기 전 이만큼의 기울기 범위를 봅니다.", { step: "0.5" }),
     ],
   },
   {
     title: "자세",
     fields: [
       sel("kickstandSide", "스탠드 위치(뒤에서 볼 때)", [["left", "왼쪽"], ["right", "오른쪽"]]),
-      num("minFaceUpCos", "평평히 놓였다고 볼 각도", "°", "화면이 수평에서 이보다 더 기울면 다시 놓게 합니다.", {
-        toUI: (v) => rad2deg(Math.acos(v)), fromUI: (v) => Math.cos(deg2rad(v)), step: "1",
-      }),
+      deg("fallenLean", "넘어졌다고 볼 좌우 기울기", "이보다 옆으로 누우면 기울기 판정 없이 넘어짐으로 봅니다."),
+      deg("maxPlacementPitch", "데크 위로 볼 앞뒤 각도 상한", "이보다 앞뒤로 서 있으면 휴대폰이 손에 있는 것으로 보고 사진으로 넘깁니다."),
       deg("minLean", "좌우 기울기 하한 θmin", "이보다 작으면 바퀴 쪽으로 넘어질 수 있습니다."),
       deg("maxLean", "좌우 기울기 상한 θmax", "이보다 크면 스탠드 쪽으로 넘어갈 수 있습니다."),
       deg("maxAbsPitch", "앞뒤 경사 상한"),
       deg("angleTolerance", "경계 애매 구간", "임계값에서 이 폭 안이면 통과도 거부도 아닌 사진으로 넘깁니다."),
+      deg("refLowerMargin", "기준 자세 아래 여유", "보정 탭에서 기준 자세를 저장하면 θmin = 기준 θ − 이 값(최소 2°)"),
+      deg("refUpperMargin", "기준 자세 위 여유", "θmax = 기준 θ + 이 값"),
     ],
   },
 ];
@@ -89,10 +91,14 @@ export function initSettings(ctx) {
     );
 
     const misc = h("fieldset", {},
-      h("legend", {}, "기록"),
+      h("legend", {}, "기록과 알림"),
       h("div", { class: "row" },
         h("label", { for: "set-saveRawMotion" }, "원시 모션 데이터 저장", h("small", {}, "측정마다 마지막 5초 원시값을 남깁니다. 저장 공간을 씁니다.")),
         h("input", { id: "set-saveRawMotion", type: "checkbox", checked: cfg.saveRawMotion, style: "width: 28px; height: 28px; justify-self: end" }),
+      ),
+      h("div", { class: "row" },
+        h("label", { for: "set-sound" }, "결과 알림음", h("small", {}, "측정이 끝나면 결과별로 다른 소리를 냅니다. Android는 진동도 같이 옵니다.")),
+        h("input", { id: "set-sound", type: "checkbox", checked: cfg.sound, style: "width: 28px; height: 28px; justify-self: end" }),
       ),
       h("div", { class: "row" },
         h("label", {}, "NFC 바인딩", h("small", {}, "웹 버전에서는 구현하지 않았습니다. iPhone 브라우저는 Web NFC를 지원하지 않습니다.")),
@@ -133,6 +139,7 @@ export function initSettings(ctx) {
       cfg.geometry = null;
     }
     cfg.saveRawMotion = $("#set-saveRawMotion").checked;
+    cfg.sound = $("#set-sound").checked;
     return { cfg: useGeo && !bad.length ? applyGeometry(cfg) : cfg, bad };
   }
 

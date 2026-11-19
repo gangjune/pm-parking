@@ -1,8 +1,9 @@
 import { LocalProjection, estimatePosition, squareAround } from "../core/geo.js";
 import * as store from "../storage.js";
-import { $, h, fmt, toast, download, stamp } from "./util.js";
+import { $, h, fmt, toast, download, stamp, DECISION_TEXT } from "./util.js";
 
 const COLOR = { allowed: "#1B7F45", forbidden: "#BF2E25" };
+const DECISION_COLOR = { returnWithoutPhoto: "#1B7F45", requirePhoto: "#A86A00", reject: "#BF2E25" };
 const KIND_TEXT = { allowed: "허용 구역", forbidden: "금지 구역" };
 const DEFAULT_CENTER = [37.4505, 126.6537]; // 위치를 아직 못 받았을 때만 쓰는 시작점
 
@@ -56,6 +57,7 @@ export function initZones(ctx) {
   let drawPts = [];
   let drawLayer = null;
   let kind = "allowed";
+  let logLayer = null;
 
   const save = () => {
     store.saveZones(ctx.state.zones);
@@ -79,6 +81,7 @@ export function initZones(ctx) {
     });
     L.control.layers({ "지도": osm, "항공사진": sat }, {}, { position: "topright" }).addTo(map);
     zoneLayer = L.layerGroup().addTo(map);
+    logLayer = L.layerGroup().addTo(map);
     posLayer = L.layerGroup().addTo(map);
     map.on("click", (e) => {
       if (!drawing) return;
@@ -88,6 +91,21 @@ export function initZones(ctx) {
     ctx.location.onUpdate(() => renderPosition());
     renderZones();
     renderPosition();
+    renderLogs();
+  }
+
+  /** 측정 위치를 결과 색으로 찍는다. 어디서 잘못 세우는 일이 잦은지 보면 구역을 어디에 더 둘지 근거가 된다 */
+  function renderLogs() {
+    if (!logLayer) return;
+    logLayer.clearLayers();
+    if (!$("#showLogs").checked) return;
+    for (const l of ctx.state.logs) {
+      const m = l.checks.find((c) => c.name === "location")?.metrics;
+      if (m?.lat == null) continue;
+      L.circleMarker([m.lat, m.lon], {
+        radius: 6, color: "#FFFFFF", weight: 1.5, fillColor: DECISION_COLOR[l.decision], fillOpacity: 0.9,
+      }).bindPopup(`${DECISION_TEXT[l.decision]}<br>${new Date(l.time).toLocaleString("ko-KR")}${l.label ? `<br>정답: ${l.label === "correct" ? "올바른 주차" : "잘못된 주차"}` : ""}`).addTo(logLayer);
+    }
   }
 
   function renderZones() {
@@ -229,12 +247,16 @@ export function initZones(ctx) {
     }
   });
 
+  $("#showLogs").addEventListener("change", renderLogs);
+  ctx.on("logs-changed", renderLogs);
+
   renderZones();
 
   return () => {
     ensureMap();
     // 숨겨진 상태에서 만들어진 지도는 크기를 0으로 잡아서 탭이 보일 때 다시 재게 한다
-    setTimeout(() => map?.invalidateSize(), 50);
+    setTimeout(() => map?.invalidateSize(), 80);
     renderPosition();
+    renderLogs();
   };
 }

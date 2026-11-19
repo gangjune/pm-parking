@@ -52,24 +52,53 @@ export class LocalPolygon {
     return inside;
   }
 
-  /** 안에 있으면 0 */
-  distance(p) {
+  /** 가장 가까운 경계 위 점. 안에 있으면 그 점 자신, 거리 0 */
+  nearest(p) {
     const v = this.v;
-    if (v.length < 3) return Infinity;
-    if (this.contains(p)) return 0;
-    let best = Infinity;
+    if (v.length < 3) return { point: null, distance: Infinity };
+    if (this.contains(p)) return { point: p, distance: 0 };
+    let best = { point: null, distance: Infinity };
     for (let i = 0, j = v.length - 1; i < v.length; j = i++) {
-      best = Math.min(best, segmentDistance(p, v[j], v[i]));
+      const q = closestOnSegment(p, v[j], v[i]);
+      const d = Math.hypot(p.x - q.x, p.y - q.y);
+      if (d < best.distance) best = { point: q, distance: d };
     }
     return best;
   }
+
+  distance(p) {
+    return this.nearest(p).distance;
+  }
 }
 
-function segmentDistance(p, a, b) {
+function closestOnSegment(p, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
   const len2 = dx * dx + dy * dy;
   const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
-  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+  return { x: a.x + t * dx, y: a.y + t * dy };
+}
+
+/**
+ * 현재 위치에서 가장 가까운 허용구역과 그 경계 위 지점. 안에 있으면 distance 0.
+ * 주행 지도에서 어느 구역을 강조할지 고르는 데 쓴다. 반납 직전이 아니라 달리는 동안 보여줘야
+ * 구역 쪽으로 가서 세울 여지가 생긴다.
+ */
+export function nearestAllowed(center, zones) {
+  const proj = new LocalProjection(center);
+  let best = null;
+  for (const z of zones) {
+    if (z.kind !== "allowed") continue;
+    const n = new LocalPolygon(z.polygon.map((p) => proj.toLocal(p))).nearest({ x: 0, y: 0 });
+    if (n.point && (!best || n.distance < best.distance)) best = { zoneId: z.id, distance: n.distance, local: n.point };
+  }
+  if (!best) return null;
+  const bearingDeg = ((Math.atan2(best.local.x, best.local.y) * 180) / Math.PI + 360) % 360;
+  return {
+    zoneId: best.zoneId,
+    distance: best.distance,
+    bearingDeg,
+    point: proj.toGeo(best.local),
+  };
 }
 
 /**
